@@ -1274,6 +1274,10 @@ def main() -> None:
                 sources = [sources]
 
             edit_plan = parse_json_arg(args.edit_plan, DEFAULT_EDIT_PLAN.copy()) if args.edit_plan else DEFAULT_EDIT_PLAN.copy()
+            work_dir_path = Path(args.work_dir).expanduser().resolve()
+            import shutil
+            if work_dir_path.exists():
+                shutil.rmtree(work_dir_path, ignore_errors=True)
             work_dir = ensure_dir(args.work_dir)
             source_paths = prepare_sources(sources, work_dir)
             music_path = Path(args.music).expanduser().resolve() if args.music else None

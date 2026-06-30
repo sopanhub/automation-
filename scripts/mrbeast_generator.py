@@ -800,6 +800,9 @@ def main():
     BOTTOM_H = int(TARGET_H * (1 - SPLIT_RATIO))
     TOP_H    = TARGET_H - BOTTOM_H
 
+    import shutil
+    if WORK_DIR.exists():
+        shutil.rmtree(WORK_DIR, ignore_errors=True)
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 

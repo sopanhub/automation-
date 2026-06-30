@@ -109,10 +109,11 @@ def analyze_with_gemini(video_path: Path) -> Optional[List[dict]]:
     Returns a list of up to 5 clip dicts, or None on failure.
     """
     try:
-        import google.generativeai as google_genai
+        from google import genai
+        from google.genai import types
         from google.api_core import exceptions as google_exceptions
     except ImportError:
-        raise RuntimeError("google-generativeai not installed. Run: pip install google-generativeai")
+        raise RuntimeError("google-genai not installed. Run: pip install google-genai")
 
     from dotenv import load_dotenv
     load_dotenv(override=True)
@@ -121,7 +122,21 @@ def analyze_with_gemini(video_path: Path) -> Optional[List[dict]]:
     if not api_key:
         raise ValueError("GEMINI_API_KEY not set in .env")
 
-    google_genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
+
+    proxy_path = video_path.parent / "gemini_proxy.mp4"
+    if not proxy_path.exists():
+        log("  Creating a lightweight proxy video for faster Gemini processing...")
+        import subprocess
+        subprocess.run([
+            "ffmpeg", "-y", "-i", str(video_path),
+            "-vf", "scale=-2:360", "-r", "15", "-b:v", "300k", "-b:a", "64k",
+            str(proxy_path)
+        ], capture_output=True)
+        if proxy_path.exists():
+            log("  ✅ Proxy created successfully.")
+    
+    upload_target = proxy_path if proxy_path.exists() else video_path
 
     MAX_RETRIES = 5
     BASE_WAIT   = 60
@@ -129,25 +144,30 @@ def analyze_with_gemini(video_path: Path) -> Optional[List[dict]]:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             log(f"  Uploading video to Gemini Files API (attempt {attempt}/{MAX_RETRIES})...")
-            video_file = google_genai.upload_file(
-                path=str(video_path),
-                display_name=video_path.name
+            video_file = client.files.upload(
+                file=str(upload_target),
+                config={"display_name": upload_target.name}
             )
 
-            while video_file.state.name == "PROCESSING":
+            max_wait_time = 60  # 1 minute max wait
+            wait_elapsed = 0
+            while video_file.state == "PROCESSING":
+                if wait_elapsed >= max_wait_time:
+                    raise RuntimeError("Gemini processing timed out after 1 minute.")
                 log("  ... video is processing, waiting 10s ...")
                 time.sleep(10)
-                video_file = google_genai.get_file(name=video_file.name)
+                wait_elapsed += 10
+                video_file = client.files.get(name=video_file.name)
 
-            if video_file.state.name == "FAILED":
-                raise RuntimeError(f"Gemini processing failed: {video_file.error}")
+            if video_file.state == "FAILED":
+                raise RuntimeError("Gemini processing failed.")
 
             log("  Video ready. Asking Gemini to find top 5 viral moments...")
 
-            model = google_genai.GenerativeModel(model_name="models/gemini-2.0-flash")
-            response = model.generate_content(
-                [video_file, GEMINI_MASTER_PROMPT],
-                generation_config=google_genai.GenerationConfig(
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[video_file, GEMINI_MASTER_PROMPT],
+                config=types.GenerateContentConfig(
                     temperature=0.35,
                     max_output_tokens=4096,
                 )
@@ -173,17 +193,18 @@ def analyze_with_gemini(video_path: Path) -> Optional[List[dict]]:
 
             return clips
 
-        except (google_exceptions.ResourceExhausted, google_exceptions.InternalServerError) as e:
-            wait = BASE_WAIT * attempt
-            log(f"  Gemini rate limited (attempt {attempt}/{MAX_RETRIES}). Retrying in {wait}s...")
-            time.sleep(wait)
         except Exception as e:
-            log(f"  Gemini analysis failed: {e}")
-            import traceback
-            traceback.print_exc()
-            break
+            from google.genai.errors import APIError
+            if isinstance(e, APIError) and getattr(e, "code", 200) in [429, 500, 503]:
+                wait = BASE_WAIT * attempt
+                log(f"  Gemini rate limited/server error (attempt {attempt}/{MAX_RETRIES}). Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                log(f"  Gemini analysis failed: {e}")
+                import traceback
+                traceback.print_exc()
+                break
 
-    log("  Gemini analysis failed. Switching to PySceneDetect fallback.")
     return None
 
 
