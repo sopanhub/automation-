@@ -249,7 +249,10 @@ def download_source(url: str, out_path: Path) -> Path:
         "noplaylist": True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+        info = ydl.extract_info(url, download=True)
+        title = info.get("title", "")
+        if title:
+            log(f"SOURCE_TITLE: {title}")
     if not out_path.exists():
         raise FileNotFoundError(f"Download failed: {url}")
     return out_path
@@ -1245,7 +1248,12 @@ def main() -> None:
             music_path = Path(args.music).expanduser().resolve() if args.music else None
             build_reference_style_video(source_paths, edit_plan, music_path, Path(args.output).expanduser().resolve(), work_dir)
         else:
-            video = Path(args.video or args.output).expanduser().resolve()
+            # For the 'upload' action, prioritize the --video argument.
+            # If it's not provided (as is the case when called from the simple web UI),
+            # fall back to the default output path where the 'generate' action saves the file.
+            # This avoids ambiguity with the --output argument which is for generation.
+            video_path_str = args.video if args.video else str(DEFAULT_OUTPUT)
+            video = Path(video_path_str).expanduser().resolve()
             if not video.exists():
                 raise FileNotFoundError(f"Video not found: {video}")
             if not args.title or not args.description:

@@ -1,21 +1,57 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 export default function Dashboard() {
-  const [url, setUrl]                       = useState('');
-  const [status, setStatus]                 = useState('Idle');
-  const [logs, setLogs]                     = useState([]);
+  const [url, setUrl] = useState('');
+  const [status, setStatus] = useState('Idle');
+  const [logs, setLogs] = useState([]);
   const [videoGenerated, setVideoGenerated] = useState(false);
-  const [loading, setLoading]               = useState(false);
-  const [uploadTitle, setUploadTitle]       = useState('');
-  const [uploadDescription, setUploadDescription] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [uploadTitle, setUploadTitle] = useState('');
+  const [uploadDescription, setUploadDescription] = useState(`Looking for the best ultra-realistic shaders for Minecraft Pocket Edition (MCPE) and Minecraft Bedrock Edition that work smoothly on lightweight, low-end, and mid-range devices?
+In this video, we showcase a handpicked selection of top-tier shaders featuring stunning graphics, realistic lighting, beautiful skies, enhanced water reflections, volumetric fog, dynamic shadows, and an immersive next-generation visual experience—all without requiring a high-end phone or an RTX graphics card!
+
+
+✨ Key Features
+
+Performance: Lightweight, FPS-friendly, and optimized for low-end devices.
+Visuals: Enhanced sky, realistic clouds, vibrant colors, and improved water visuals.
+Lighting: Better sunlight, realistic moonlight, and dynamic shadow effects.
+Atmosphere: Smooth atmospheric effects and volumetric fog.
+Accessibility: 100% FREE to download with No RTX Required.
+
+🔗 Download Links
+👉 Get all the shaders featured in this video here: 👇
+https://www.piglixmcmods.dev/
+
+💬 Join the Conversation!
+
+Which shader was your favorite? Comment the name below! 👇
+What shader pack or mod should I review next? Let me know in the comments!
+Don't forget to Like and Subscribe for more Minecraft Bedrock content! 👍
+🔍 SEO & Keywords (Search Optimization)
+
+
+BSL, Newb, SEUS, SLS, Complementary realistic minecraft shaders, mcpe shaders, render dragon shaders, low-end device shaders, no lag shaders, minecraft, minecraft shaders, realistic minecraft, minecraft mod, minecraft texture pack, minecraft java, minecraft bedrock, best minecraft shaders, gaming shorts, viral minecraft, shader pack tutorial.
+
+
+🏷️ Tags
+#MinecraftPE #MinecraftShaders #MCPE #BedrockEdition #patchshaders #mcpeshaders #BSLShaders #NewbShaders #SEUSShaders #SLSShaders #ComplementaryShaders`);
+  const [videoKey, setVideoKey] = useState(Date.now());
   const videoRef = useRef(null);
 
   // ── Logs ─────────────────────────────────────────────────────────────────
 
   const addLog = (msg) =>
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+
+  // When a new video is generated, force the <video> element to reload its source.
+  useEffect(() => {
+    if (videoGenerated && videoRef.current) {
+      videoRef.current.load();
+    }
+  }, [videoGenerated, videoKey]);
 
   // ── Generate ─────────────────────────────────────────────────────────────
 
@@ -43,7 +79,7 @@ export default function Dashboard() {
         try {
           const errData = await response.json();
           errorMsg = errData.error || response.statusText;
-        } catch (e) {}
+        } catch (e) { }
         addLog('❌ Error: ' + errorMsg);
         setStatus('❌ Generation Failed.');
         setLoading(false);
@@ -67,17 +103,26 @@ export default function Dashboard() {
           try {
             const parsed = JSON.parse(line);
             if (parsed.type === 'log') {
-              addLog(parsed.message.trim());
-              if (parsed.message.includes('Analysing video with Gemini')) {
+              const msg = parsed.message.trim();
+              if (msg.startsWith('SOURCE_TITLE:')) {
+                const extractedTitle = msg.replace('SOURCE_TITLE:', '').trim();
+                if (extractedTitle) {
+                  setUploadTitle(extractedTitle);
+                }
+                continue;
+              }
+              addLog(msg);
+              if (msg.includes('Analysing video with Gemini')) {
                 setStatus('Watching video for shader before/after moments…');
-              } else if (parsed.message.includes('Assembling alternating video clips')) {
+              } else if (msg.includes('Assembling alternating video clips')) {
                 setStatus('Cutting before/after clips…');
-              } else if (parsed.message.includes('Writing final video')) {
+              } else if (msg.includes('Writing final video')) {
                 setStatus('Rendering final short…');
               }
             } else if (parsed.type === 'success') {
               setStatus('✅ Short generated successfully!');
               setVideoGenerated(true);
+              setVideoKey(Date.now());
             } else if (parsed.type === 'error') {
               addLog('❌ Error: ' + parsed.message);
               setStatus('❌ Generation Failed.');
@@ -132,12 +177,12 @@ export default function Dashboard() {
 
   // ── Timeline shown to the user (matches the actual Python pipeline) ───────
   const seqLabels = [
-    { time: '0–5s',   icon: '⬛', label: 'Before #1', desc: 'Vanilla Minecraft, no shaders' },
-    { time: '5–10s',  icon: '✨', label: 'After #1',  desc: 'Shader #1 revealed (Gemini names it)' },
+    { time: '0–5s', icon: '⬛', label: 'Before #1', desc: 'Vanilla Minecraft, no shaders' },
+    { time: '5–10s', icon: '✨', label: 'After #1', desc: 'Shader #1 revealed (Gemini names it)' },
     { time: '10–15s', icon: '⬛', label: 'Before #2', desc: 'Vanilla again' },
-    { time: '15–20s', icon: '✨', label: 'After #2',  desc: 'Shader #2 revealed' },
+    { time: '15–20s', icon: '✨', label: 'After #2', desc: 'Shader #2 revealed' },
     { time: '20–25s', icon: '⬛', label: 'Before #3', desc: 'Vanilla again' },
-    { time: '25–30s', icon: '✨', label: 'After #3',  desc: 'Shader #3 revealed' },
+    { time: '25–30s', icon: '✨', label: 'After #3', desc: 'Shader #3 revealed' },
   ];
 
   return (
@@ -212,7 +257,7 @@ export default function Dashboard() {
                 <video
                   id="preview-video"
                   ref={videoRef}
-                  src="/output/upload.mp4"
+                  src={`/output/upload.mp4?v=${videoKey}`}
                   controls
                   style={s.video}
                 />
@@ -313,7 +358,7 @@ const s = {
 
   // URL input
   urlSection: { marginBottom: 20 },
-  urlTip:    { fontSize: '0.78rem', color: '#334155', marginTop: 10, lineHeight: 1.6 },
+  urlTip: { fontSize: '0.78rem', color: '#334155', marginTop: 10, lineHeight: 1.6 },
 
   label: {
     display: 'block', marginBottom: 8, fontWeight: 600, color: '#64748b',
@@ -337,11 +382,11 @@ const s = {
     marginBottom: 20, border: '1px solid #1a2640',
   },
   tlTitle: { fontSize: '0.72rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 12 },
-  tlRow:   { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 0', borderBottom: '1px solid #0d1626' },
-  tlTime:  { fontSize: '0.7rem', fontWeight: 700, color: '#34d399', minWidth: 58, fontFamily: 'monospace', paddingTop: 1 },
-  tlIcon:  { fontSize: '0.85rem', paddingTop: 1 },
+  tlRow: { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '7px 0', borderBottom: '1px solid #0d1626' },
+  tlTime: { fontSize: '0.7rem', fontWeight: 700, color: '#34d399', minWidth: 58, fontFamily: 'monospace', paddingTop: 1 },
+  tlIcon: { fontSize: '0.85rem', paddingTop: 1 },
   tlLabel: { fontSize: '0.8rem', fontWeight: 600, color: '#818cf8', marginBottom: 2 },
-  tlDesc:  { fontSize: '0.72rem', color: '#475569', lineHeight: 1.4 },
+  tlDesc: { fontSize: '0.72rem', color: '#475569', lineHeight: 1.4 },
 
   btn: {
     width: '100%', padding: 16, borderRadius: 10, border: 'none',
@@ -357,7 +402,7 @@ const s = {
 
   // Video player (vertical short)
   videoWrap: { width: '100%', maxWidth: 280, aspectRatio: '480 / 854', backgroundColor: '#000', borderRadius: 10, overflow: 'hidden', marginBottom: 16, margin: '0 auto 16px' },
-  video:     { width: '100%', height: '100%', display: 'block', objectFit: 'contain' },
+  video: { width: '100%', height: '100%', display: 'block', objectFit: 'contain' },
 
   // Metadata / upload form
   metaPanel: { backgroundColor: '#060b14', borderRadius: 10, padding: 16, border: '1px solid #1a2640', marginBottom: 4 },
@@ -370,11 +415,11 @@ const s = {
   },
   phIcon: { fontSize: '2.8rem', opacity: 0.3, marginBottom: 16 },
   phText: { color: '#475569', fontSize: '1rem', fontWeight: 600, marginBottom: 8 },
-  phSub:  { color: '#2d3f55', fontSize: '0.85rem', lineHeight: 1.7 },
+  phSub: { color: '#2d3f55', fontSize: '0.85rem', lineHeight: 1.7 },
 
   // Logs
   logsHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  clearBtn:   { background: 'none', border: '1px solid #1a2640', color: '#475569', padding: '4px 12px', borderRadius: 6, cursor: 'pointer', fontSize: '0.8rem' },
+  clearBtn: { background: 'none', border: '1px solid #1a2640', color: '#475569', padding: '4px 12px', borderRadius: 6, cursor: 'pointer', fontSize: '0.8rem' },
   logs: {
     backgroundColor: '#060b14', padding: 16, borderRadius: 10, fontFamily: 'monospace',
     fontSize: '0.78rem', color: '#34d399', maxHeight: 360, overflowY: 'auto',
