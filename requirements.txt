@@ -1,0 +1,9 @@
+moviepy>=2.0
+pillow
+numpy
+yt-dlp
+edge-tts
+python-dotenv
+google-genai
+google-api-python-client
+google-auth
