@@ -241,7 +241,7 @@ def download_source(url: str, out_path: Path) -> Path:
         return out_path
     log(f"Downloading source: {url}")
     ydl_opts = {
-        "format": "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/best",
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "outtmpl": str(out_path),
         "merge_output_format": "mp4",
         "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
@@ -741,6 +741,7 @@ def _sanitize_pairs(raw: Any, num_pairs: int) -> List[Dict[str, Any]]:
                 "shader_name": str(item.get("shader_name") or f"Shader Pack {i + 1}").strip() or f"Shader Pack {i + 1}",
                 "vanilla_start": safe_float(item.get("vanilla_start"), 10.0 + i * 40),
                 "shader_start": safe_float(item.get("shader_start"), 30.0 + i * 40),
+                "script": item.get("script", "").strip()
             })
     if not cleaned:
         cleaned = [
@@ -754,18 +755,17 @@ def _sanitize_pairs(raw: Any, num_pairs: int) -> List[Dict[str, Any]]:
     return cleaned[:num_pairs]
 
 
-def get_gemini_pairs(video_path: Path) -> dict:
-    # This function is rewritten to be more robust against common auth issues.
-    # It uses the official Python SDK and handles rate limiting with retries.
+def get_gemini_pairs(video_path: Path, youtube_url: Optional[str] = None) -> dict:
     try:
-        import google.generativeai as google_genai
-        from google.api_core import exceptions as google_exceptions
+        from google import genai
+        from google.genai import types
     except ImportError:
-        raise RuntimeError("Google GenAI SDK not found. Please run: pip install google-generativeai")
+        raise RuntimeError("Google GenAI SDK not found. Please run: pip install google-genai")
 
     import time
     import os
     import json
+    import re
 
     log("▶ Analysing video with Gemini API …")
     from dotenv import load_dotenv
@@ -774,46 +774,50 @@ def get_gemini_pairs(video_path: Path) -> dict:
     if not api_key:
         raise ValueError("GEMINI_API_KEY environment variable is not set.")
 
-    # The `ACCESS_TOKEN_TYPE_UNSUPPORTED` error often happens when the SDK
-    # mistakenly tries to use Vertex AI authentication with a standard Gemini
-    # API key. We explicitly disable it to be safe.
-    if os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "false").lower() == "true":
-        log("  [INFO] GOOGLE_GENAI_USE_VERTEXAI is set. Forcing 'false' to use API key auth.")
-        os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "false"
-
-    google_genai.configure(api_key=api_key.strip())
+    client = genai.Client(api_key=api_key.strip())
 
     MAX_RETRIES = 5
-    BASE_WAIT   = 60  # seconds to wait on first 429
+    BASE_WAIT   = 60
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            log(f"  Uploading video to Gemini Files API (attempt {attempt}/{MAX_RETRIES})…")
-            video_file = google_genai.upload_file(
-                path=video_path,
-                display_name=video_path.name
-            )
-
-            while video_file.state.name == "PROCESSING":
-                log("  … video is processing, waiting 10s …")
-                time.sleep(10)
-                video_file = google_genai.get_file(name=video_file.name)
-
-            if video_file.state.name == "FAILED":
-                raise RuntimeError(f"Gemini video processing FAILED. Full details: {video_file.error}")
-
-            log("  Video ready. Asking Gemini for timestamps …")
+            if youtube_url:
+                log(f"  Using YouTube URL directly for Gemini: {youtube_url}")
+                video_file = None
+            else:
+                log(f"  Uploading video to Gemini Files API (attempt {attempt}/{MAX_RETRIES})…")
+                video_file = client.files.upload(
+                    file=str(video_path),
+                    config={"display_name": video_path.name}
+                )
+    
+                while video_file.state == "PROCESSING":
+                    log("  … video is processing, waiting 10s …")
+                    time.sleep(10)
+                    video_file = client.files.get(name=video_file.name)
+    
+                if video_file.state == "FAILED":
+                    raise RuntimeError(f"Gemini video processing FAILED.")
+                log("  Video ready. Asking Gemini for timestamps …")
+            
             prompt = f"""
             You are a professional YouTube Shorts video editor. Watch this Minecraft shader comparison video carefully.
-            Your task is to find exactly {num_pairs} pairs of timestamps showing the BEST before/after shader contrast.
+            {"Here is the YouTube video link: " + youtube_url if youtube_url else ""}
+            Your task is to find exactly 3 pairs of timestamps showing the BEST before/after shader contrast.
             For each pair, also identify the NAME of the shader pack being shown (e.g. "BSL Shaders", "Complementary Shaders", etc.).
+            ALSO, for each pair, write a short, engaging voiceover script (about 1-2 sentences) that perfectly matches the visuals of that specific scene.
             
             CRITICAL VISUAL RULES:
-            - Find gameplay that is FULL SCREEN.
-            - Do NOT select moments with black screens, heavy UI overlays, menus, or obstacles blocking the view.
+            - Find gameplay that is 100% FULL SCREEN.
+            - Do NOT select moments with black screens, heavy UI overlays, menus, or any obstacles blocking the view.
+            - Do NOT select moments with transitions, wipes, or any visual effects covering the gameplay.
             - "vanilla_start" is the start of a clearly VANILLA (no shader) moment.
             - "shader_start" is the start of a clearly SHADERS-ON moment.
             - Space the pairs out. Do NOT cluster them all at the start.
+            
+            SCRIPTING RULES:
+            - "script" MUST EXACTLY match the actual visuals of its specific timestamp (e.g., mention the exact blocks, sky, or water seen on screen).
+            - The 3 scripts must flow together to form ONE cohesive, continuous narrative for the whole video. Pair 1 should be the hook, Pair 2 the body, and Pair 3 the conclusion. They should sound natural when read back-to-back.
             
             DESCRIPTION TASK:
             Write an engaging YouTube description using the following template, but replace [SHADER_NAMES] with the actual names you found:
@@ -823,19 +827,26 @@ def get_gemini_pairs(video_path: Path) -> dict:
             {{
               "description": "Your full description text here, exactly as generated with newlines",
               "pairs": [
-                {{"shader_name": "...", "vanilla_start": 0.0, "shader_start": 0.0}}
+                {{"shader_name": "...", "vanilla_start": 0.0, "shader_start": 0.0, "script": "..."}}
               ]
             }}
             """
-            model = google_genai.GenerativeModel(model_name="gemini-1.5-flash")
-            response = model.generate_content(
-                [video_file, prompt],
-                generation_config=google_genai.types.GenerationConfig(
-                    response_mime_type="application/json"
-                ),
+            
+            contents = [video_file, prompt] if video_file else [prompt]
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.35,
+                )
             )
             
-            raw_response = json.loads(response.text)
+            raw_text = response.text.strip()
+            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+            raw_text = re.sub(r"\s*```$", "", raw_text.strip())
+            
+            raw_response = json.loads(raw_text)
             desc = raw_response.get("description", "")
             if desc:
                 desc_escaped = desc.replace("\\n", "\\\\n").replace("\n", "\\n")
@@ -845,21 +856,27 @@ def get_gemini_pairs(video_path: Path) -> dict:
             pairs = _sanitize_pairs(raw_pairs, len(raw_pairs)) # keep however many it found
             log(f"  Gemini returned {len(pairs)} usable pair(s)")
             return {"pairs": pairs, "voiceover_script": raw_response.get("voiceover_script", "")}
-        except (google_exceptions.ResourceExhausted, google_exceptions.InternalServerError) as e:
-            err_str = str(e)
-            wait_secs = BASE_WAIT * attempt
-            log(f"  ⚠ Gemini API busy (attempt {attempt}/{MAX_RETRIES}). Waiting {wait_secs}s before retry…")
-            time.sleep(wait_secs)
+            
         except Exception as e:
-            log(f"  ❌ An unexpected error occurred with the Gemini API: {e}")
-            log("     Switching to fallback timestamps.")
-            break # Exit retry loop on unexpected errors
+            from google.genai.errors import APIError
+            if isinstance(e, APIError) and getattr(e, "code", 200) in [429, 500, 503]:
+                wait_secs = BASE_WAIT * attempt
+                log(f"  ⚠ Gemini rate limited or internal error: {e}")
+                log(f"  Retrying in {wait_secs}s ...")
+                time.sleep(wait_secs)
+                continue
+            else:
+                log(f"  ❌ An unexpected error occurred with the Gemini API: {e}")
+                import traceback
+                traceback.print_exc()
+                log("     Switching to fallback timestamps.")
+                break
 
     log("  Using fallback timestamps.")
     pairs = [{"shader_name": f"Shader Pack {i + 1}", "vanilla_start": 10.0 + i*40, "shader_start": 30.0 + i*40} for i in range(3)]
     return {"pairs": pairs, "voiceover_script": ""}
 
-def build_reference_style_video(source_paths: Sequence[Path], edit_plan: Dict[str, Any], music_path: Optional[Path], output: Path, work_dir: Path) -> Path:
+def build_reference_style_video(source_paths: Sequence[Path], edit_plan: Dict[str, Any], music_path: Optional[Path], output: Path, work_dir: Path, youtube_url: Optional[str] = None) -> Path:
     ensure_dir(work_dir)
     ensure_dir(output.parent)
 
@@ -870,24 +887,39 @@ def build_reference_style_video(source_paths: Sequence[Path], edit_plan: Dict[st
     raw_path = source_paths[0]
     raw_clip = VideoFileClip(str(raw_path))
 
-    # Ask Gemini to dynamically find all shaders and write the script
-    gemini_data = get_gemini_pairs(raw_path)
+    # Ask Gemini to find exactly 3 shader pairs with names
+    gemini_data = get_gemini_pairs(raw_path, youtube_url)
     pairs = gemini_data.get("pairs", [])
     if not pairs:
         log("  ⚠ Gemini found no pairs. Using fallback pairs.")
         pairs = [{"shader_name": f"Shader Pack {i + 1}", "vanilla_start": 10.0 + i*40, "shader_start": 30.0 + i*40} for i in range(3)]
     
-    VOICEOVER_SCRIPT = gemini_data.get("voiceover_script", "")
-    if not VOICEOVER_SCRIPT:
-        # Fallback script if Gemini failed to generate one
-        pair_lines = []
-        for i, p in enumerate(pairs):
-            name = p.get("shader_name", f"this shader pack")
-            pair_lines.append(f"Here is {name}. Check out how it transforms the world with incredible visuals.")
-        VOICEOVER_SCRIPT = " ".join(pair_lines)
+    # Build VOICEOVER_SCRIPT dynamically from the pairs' script field
+    pair_lines = []
+    for i, p in enumerate(pairs):
+        v_start = float(p.get("vanilla_start", 0.0))
+        s_start = float(p.get("shader_start", 0.0))
+        name = p.get("shader_name", f"this shader pack")
+        script = p.get("script", "").strip()
+        
+        # Log exact timestamps for the frontend
+        log(f"  [Pair {i+1}] Vanilla @ {v_start:.1f}s -> Shader @ {s_start:.1f}s")
+        log(f"  [Pair {i+1}] Script: {script if script else 'None (using fallback)'}")
+        
+        if script:
+            pair_lines.append(script)
+        else:
+            if i == 0:
+                pair_lines.append(f"Look at this plain vanilla Minecraft. Now watch what {name} does to it!")
+            elif i == 1:
+                pair_lines.append(f"Still not convinced? Here comes {name} — absolutely insane!")
+            else:
+                pair_lines.append(f"One more. Vanilla is boring, but {name} completely transforms the game!")
+                
+    VOICEOVER_SCRIPT = " ".join(pair_lines)
 
     CLIP_DURATION = 5.0  # BEFORE + AFTER per pair
-    log(f"  Voiceover script: {VOICEOVER_SCRIPT[:80]}…")
+    log(f"  Final Voiceover script: {VOICEOVER_SCRIPT[:80]}…")
 
     # ── Assemble alternating BEFORE/AFTER clips ───────────────────────────────
     log("Assembling alternating video clips...")
@@ -1199,7 +1231,7 @@ def build_audio(plan: Dict[str, Any], work_dir: Path, music_path: Optional[Path]
 # YouTube Upload with env-only secrets
 # ──────────────────────────────────────────────────────────────────────────────
 
-def upload_to_youtube(video_path: Path, title: str, description: str, privacy: str = "public") -> None:
+def upload_to_youtube(video_path: Path, title: str, description: str, privacy: str = "public", channel: str = "minecraft") -> None:
     import sys
     from dotenv import load_dotenv
     from google.oauth2.credentials import Credentials
@@ -1208,11 +1240,12 @@ def upload_to_youtube(video_path: Path, title: str, description: str, privacy: s
     from google.auth.exceptions import RefreshError
 
     load_dotenv(override=True)
-    client_id = os.getenv("YOUTUBE_CLIENT_ID")
-    client_secret = os.getenv("YOUTUBE_CLIENT_SECRET")
-    refresh_token = os.getenv("YOUTUBE_REFRESH_TOKEN")
+    prefix = channel.upper() + "_"
+    client_id = os.getenv(f"{prefix}YOUTUBE_CLIENT_ID") or os.getenv("YOUTUBE_CLIENT_ID")
+    client_secret = os.getenv(f"{prefix}YOUTUBE_CLIENT_SECRET") or os.getenv("YOUTUBE_CLIENT_SECRET")
+    refresh_token = os.getenv(f"{prefix}YOUTUBE_REFRESH_TOKEN") or os.getenv("YOUTUBE_REFRESH_TOKEN")
     if not client_id or not client_secret or not refresh_token:
-        raise RuntimeError("Missing YouTube env vars. Set YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REFRESH_TOKEN.")
+        raise RuntimeError(f"Missing YouTube env vars. Set {prefix}YOUTUBE_CLIENT_ID, {prefix}YOUTUBE_CLIENT_SECRET, {prefix}YOUTUBE_REFRESH_TOKEN.")
 
     try:
         creds = Credentials(
@@ -1257,6 +1290,7 @@ def main() -> None:
     parser.add_argument("--video", help="Video path for upload action")
     parser.add_argument("--title", help="YouTube upload title")
     parser.add_argument("--description", help="YouTube upload description")
+    parser.add_argument("--channel", default="minecraft", help="Channel prefix for YouTube credentials (minecraft or mrbeast)")
     parser.add_argument("--privacy", default="public", choices=["public", "unlisted", "private"])
     args = parser.parse_args()
 
@@ -1281,7 +1315,8 @@ def main() -> None:
             work_dir = ensure_dir(args.work_dir)
             source_paths = prepare_sources(sources, work_dir)
             music_path = Path(args.music).expanduser().resolve() if args.music else None
-            build_reference_style_video(source_paths, edit_plan, music_path, Path(args.output).expanduser().resolve(), work_dir)
+            youtube_url = next((s for s in sources if is_url(s)), None)
+            build_reference_style_video(source_paths, edit_plan, music_path, Path(args.output).expanduser().resolve(), work_dir, youtube_url)
         else:
             # For the 'upload' action, prioritize the --video argument.
             # If it's not provided (as is the case when called from the simple web UI),
@@ -1293,7 +1328,7 @@ def main() -> None:
                 raise FileNotFoundError(f"Video not found: {video}")
             if not args.title or not args.description:
                 raise ValueError("--title and --description are required for upload.")
-            upload_to_youtube(video, args.title, args.description, args.privacy)
+            upload_to_youtube(video, args.title, args.description, args.privacy, args.channel)
     except Exception:
         print("\n[FATAL ERROR]")
         traceback.print_exc()

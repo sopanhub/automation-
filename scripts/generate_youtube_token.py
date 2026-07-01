@@ -1,20 +1,20 @@
+import argparse
 import os
 import re
-from dotenv import load_dotenv
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 def main():
-    # Load existing .env file
+    parser = argparse.ArgumentParser(description="Generate YouTube token")
+    parser.add_argument("--channel", default="minecraft", help="Channel prefix (minecraft or mrbeast)")
+    args = parser.parse_args()
+
+    from dotenv import load_dotenv
     env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
     load_dotenv(env_path)
 
-    client_id = os.getenv('YOUTUBE_CLIENT_ID')
-    client_secret = os.getenv('YOUTUBE_CLIENT_SECRET')
-
-    if not client_id or not client_secret or client_id == 'your_client_id_here':
-        print("Error: YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET are not set correctly in your .env file.")
-        print("Please set them with real credentials from Google Cloud Console first.")
-        return
+    prefix = args.channel.upper() + "_"
+    client_id = os.getenv(f"{prefix}YOUTUBE_CLIENT_ID") or os.getenv("YOUTUBE_CLIENT_ID")
+    client_secret = os.getenv(f"{prefix}YOUTUBE_CLIENT_SECRET") or os.getenv("YOUTUBE_CLIENT_SECRET")
 
     client_config = {
         "installed": {
@@ -30,7 +30,8 @@ def main():
     print("Opening browser for authentication...")
     try:
         flow = InstalledAppFlow.from_client_config(client_config, scopes)
-        credentials = flow.run_local_server(port=0)
+        # Force account selection menu
+        credentials = flow.run_local_server(port=0, prompt="select_account")
     except Exception as e:
         print(f"Authentication failed: {e}")
         return
@@ -38,7 +39,7 @@ def main():
     refresh_token = credentials.refresh_token
 
     if not refresh_token:
-        print("No refresh token received. You might need to revoke the app access in your Google account and try again, or ensure you are requesting offline access.")
+        print("No refresh token received.")
         return
 
     print("\nSuccessfully obtained new refresh token!")
@@ -48,28 +49,25 @@ def main():
         with open(env_path, 'r') as f:
             env_content = f.read()
 
-        if 'YOUTUBE_REFRESH_TOKEN=' in env_content:
-            # Replace existing token
+        if f'{prefix}YOUTUBE_REFRESH_TOKEN=' in env_content:
             env_content = re.sub(
-                r'YOUTUBE_REFRESH_TOKEN=.*',
-                f'YOUTUBE_REFRESH_TOKEN="{refresh_token}"',
+                rf'{prefix}YOUTUBE_REFRESH_TOKEN=.*',
+                f'{prefix}YOUTUBE_REFRESH_TOKEN="{refresh_token}"',
                 env_content
             )
         else:
-            # Append new token
             if not env_content.endswith('\n'):
                 env_content += '\n'
-            env_content += f'YOUTUBE_REFRESH_TOKEN="{refresh_token}"\n'
+            env_content += f'{prefix}YOUTUBE_REFRESH_TOKEN="{refresh_token}"\n'
 
         with open(env_path, 'w') as f:
             f.write(env_content)
         
-        print("Successfully updated YOUTUBE_REFRESH_TOKEN in your .env file.")
-        print("You can now resume generating/uploading videos!")
+        print(f"Successfully updated {prefix}YOUTUBE_REFRESH_TOKEN in your .env file.")
 
     except Exception as e:
-        print(f"Failed to update .env file automatically: {e}")
-        print(f"Please manually copy this token to your .env file as YOUTUBE_REFRESH_TOKEN:\n{refresh_token}")
+        print(f"Failed to update .env file: {e}")
+        print(f"Token:\n{refresh_token}")
 
 if __name__ == '__main__':
     main()

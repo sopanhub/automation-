@@ -83,9 +83,17 @@ def run(cmd: List[str], cwd=None, check=True) -> subprocess.CompletedProcess:
 
 def ytdlp_download(url: str, out_path: Path, extra_args: List[str] = None) -> bool:
     """Download a YouTube video to out_path using yt-dlp. Returns True on success."""
+    max_h = 1080
+    if TARGET_W == 480:
+        max_h = 480
+    elif TARGET_W == 720:
+        max_h = 720
+        
+    format_str = f"bestvideo[height<={max_h}][ext=mp4]+bestaudio[ext=m4a]/best[height<={max_h}][ext=mp4]/best"
+    
     args = [
         "yt-dlp",
-        "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/best",
+        "-f", format_str,
         "--merge-output-format", "mp4",
         "-o", str(out_path),
     ]
@@ -477,23 +485,29 @@ def chunk_words(words: List[Dict], chunk_size: int = 3) -> List[Dict]:
     return chunks
 
 
-def render_caption_frame(text: str, frame_w: int = TARGET_W, frame_h: int = TARGET_H) -> np.ndarray:
+def render_caption_frame(text: str, frame_w: int = None, frame_h: int = None) -> np.ndarray:
     """Render a single caption frame as RGBA numpy array."""
+    if frame_w is None: frame_w = TARGET_W
+    if frame_h is None: frame_h = TARGET_H
+    
     img = Image.new("RGBA", (frame_w, frame_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img, "RGBA")
 
-    font_size = 88  # large Impact
+    font_size = max(32, int(88 * (frame_w / 1080)))
     font = load_font(font_size)
 
     words = text.split()
     # Render each word separately to color action verbs
     line_imgs = []
     # Build lines first
+    sw1 = max(2, int(6 * (frame_w / 1080)))
+    sw2 = max(3, int(8 * (frame_w / 1080)))
+
     lines_text = []
     cur_line = []
     for w in words:
         test = " ".join(cur_line + [w])
-        bbox = draw.textbbox((0, 0), test, font=font, stroke_width=6)
+        bbox = draw.textbbox((0, 0), test, font=font, stroke_width=sw1)
         if bbox[2] - bbox[0] > frame_w - 80 and cur_line:
             lines_text.append(cur_line)
             cur_line = [w]
@@ -502,14 +516,14 @@ def render_caption_frame(text: str, frame_w: int = TARGET_W, frame_h: int = TARG
     if cur_line:
         lines_text.append(cur_line)
 
-    line_h = font_size + 20
+    line_h = font_size + int(20 * (frame_w / 1080))
     total_text_h = len(lines_text) * line_h
     y_start = int(frame_h * 0.68) - total_text_h // 2  # place in lower-middle area
 
     for line_words in lines_text:
         # Measure full line
         full_line = " ".join(line_words)
-        bbox = draw.textbbox((0, 0), full_line, font=font, stroke_width=6)
+        bbox = draw.textbbox((0, 0), full_line, font=font, stroke_width=sw1)
         line_w = bbox[2] - bbox[0]
         x = (frame_w - line_w) // 2
 
@@ -524,12 +538,12 @@ def render_caption_frame(text: str, frame_w: int = TARGET_W, frame_h: int = TARG
 
             # shadow
             draw.text((cur_x + 5, y_start + 5), display, font=font,
-                      fill=(0, 0, 0, 180), stroke_width=8, stroke_fill=shadow_col)
+                      fill=(0, 0, 0, 180), stroke_width=sw2, stroke_fill=shadow_col)
             # main
             draw.text((cur_x, y_start), display, font=font,
-                      fill=color, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+                      fill=color, stroke_width=sw1, stroke_fill=(0, 0, 0, 255))
 
-            bbox_w = draw.textbbox((0, 0), display, font=font, stroke_width=6)
+            bbox_w = draw.textbbox((0, 0), display, font=font, stroke_width=sw1)
             cur_x += bbox_w[2] - bbox_w[0]
 
         y_start += line_h
@@ -580,19 +594,7 @@ def overlay_captions_on_video(video_path: Path, chunks: List[Dict], out_path: Pa
 # ─── Stage 8: Audio Mutation ──────────────────────────────────────────────────
 
 def download_lofi(work_dir: Path) -> Optional[Path]:
-    if LOFI_CACHE.exists() and LOFI_CACHE.stat().st_size > 1024 * 10:
-        return LOFI_CACHE
-    log(f"  Downloading lo-fi background track…")
-    tmp = work_dir / "lofi_raw.mp4"
-    if ytdlp_download(LOFI_YT_URL, tmp, extra_args=["--no-playlist"]):
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", str(tmp), "-vn", "-ar", "44100", "-ac", "2", str(LOFI_CACHE)],
-            capture_output=True
-        )
-        if LOFI_CACHE.exists():
-            log("  ✅ Lo-fi track ready.")
-            return LOFI_CACHE
-    log("  ⚠ Could not download lo-fi track; skipping background music.")
+    # Background music disabled by user request.
     return None
 
 
@@ -606,8 +608,7 @@ def apply_audio_mutations(
     """
     Audio mutations:
       - Speed voice by 1.04x (breaks audio fingerprint)
-      - Duck lo-fi music under the voice track (sidechaining via volume envelope)
-      - Subtle bass EQ shift (+3 Hz, −3 dB)
+      - Subtle bass EQ shift (-3 dB @ 60 Hz)
     """
     log("  Applying audio mutations (1.04x speed, lo-fi ducking, EQ shift)…")
 
@@ -619,34 +620,16 @@ def apply_audio_mutations(
         str(sped_voice)
     ], capture_output=True)
 
-    # Build filter chain
-    if lofi_path and lofi_path.exists():
-        # Mix with sidechain-duck: lower lofi volume when voice is active
-        filter_complex = (
-            "[1:a]volume=0.22[bg];"
-            "[0:a]volume=1.0[voice];"
-            "[bg][voice]amix=inputs=2:duration=first:dropout_transition=2[aout];"
-            "[aout]equalizer=f=60:t=o:w=200:g=-2[eq]"  # subtle bass cut
-        )
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(sped_voice),
-            "-i", str(lofi_path),
-            "-filter_complex", filter_complex,
-            "-map", "[eq]",
-            "-t", str(duration),
-            str(out_path)
-        ]
-    else:
-        filter_complex = "[0:a]equalizer=f=60:t=o:w=200:g=-2[eq]"
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(sped_voice),
-            "-filter_complex", filter_complex,
-            "-map", "[eq]",
-            "-t", str(duration),
-            str(out_path)
-        ]
+    # No background music — just speed up voice and apply EQ
+    filter_complex = "[0:a]equalizer=f=60:t=o:w=200:g=-2[eq]"
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(sped_voice),
+        "-filter_complex", filter_complex,
+        "-map", "[eq]",
+        "-t", str(duration),
+        str(out_path)
+    ]
 
     result = subprocess.run(cmd, capture_output=True)
     if not out_path.exists():
@@ -695,7 +678,8 @@ def _generate_tts_voiceover(script: str, work_dir: Path) -> Optional[Path]:
         import edge_tts
 
         async def _run():
-            communicate = edge_tts.Communicate(script, "en-US-GuyNeural", rate="+15%")
+            # Christopher = deep hype male voice, +25% rate = fast-paced energy
+            communicate = edge_tts.Communicate(script, "en-US-ChristopherNeural", rate="+25%", pitch="+5Hz")
             with open(str(out_mp3), "wb") as f:
                 async for chunk in communicate.stream():
                     if chunk["type"] == "audio":
@@ -817,7 +801,7 @@ def main():
     log("[2/5] Asking Gemini AI to find top 5 viral moments...")
     sys.path.insert(0, str(SCRIPT_DIR))
     from gemini_analyzer import get_all_clips
-    all_clips = get_all_clips(main_raw)
+    all_clips = get_all_clips(main_raw, args.url)
     log(f"  Gemini identified {len(all_clips)} clips to process.")
 
     has_gameplay = args.gameplay_url is not None

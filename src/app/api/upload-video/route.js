@@ -4,28 +4,36 @@ import path from 'path';
 
 export async function POST(request) {
   try {
-    const { title, description } = await request.json();
+    const { title, description, channel = 'minecraft', videoFilename } = await request.json();
 
     if (!title || !description) {
       return NextResponse.json({ error: 'Title and description are required' }, { status: 400 });
     }
 
-    if (!process.env.YOUTUBE_CLIENT_ID || !process.env.YOUTUBE_CLIENT_SECRET || !process.env.YOUTUBE_REFRESH_TOKEN) {
+    const prefix = channel.toUpperCase() + '_';
+    if (!process.env[`${prefix}YOUTUBE_CLIENT_ID`] || !process.env[`${prefix}YOUTUBE_CLIENT_SECRET`] || !process.env[`${prefix}YOUTUBE_REFRESH_TOKEN`]) {
       return NextResponse.json(
         {
           error:
-            'Server is missing YouTube credentials. Add YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET and YOUTUBE_REFRESH_TOKEN to your .env file.',
+            `Server is missing YouTube credentials for ${channel}. Add ${prefix}YOUTUBE_CLIENT_ID, ${prefix}YOUTUBE_CLIENT_SECRET and ${prefix}YOUTUBE_REFRESH_TOKEN to your .env file.`,
         },
         { status: 500 }
       );
     }
 
     const scriptPath = path.join(process.cwd(), 'scripts', 'video_generator.py');
+    const args = [scriptPath, '--action', 'upload', '--title', title, '--description', description, '--channel', channel];
+
+    if (videoFilename) {
+      // Safely resolve the path for the requested video file inside the public/output folder
+      const videoPath = path.join(process.cwd(), 'public', 'output', path.basename(videoFilename));
+      args.push('--video', videoPath);
+    }
 
     return new Promise((resolve) => {
       execFile(
         'python3',
-        [scriptPath, '--action', 'upload', '--title', title, '--description', description],
+        args,
         (error, stdout, stderr) => {
           if (error) {
             console.error('Python Error:', error);

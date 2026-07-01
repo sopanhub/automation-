@@ -31,7 +31,7 @@ CRITICAL CONSTRAINTS:
 2. STRICT CLIP SEPARATION: You MUST select 5 completely distinct segments from the video. The timestamps for each clip must be at least 60 seconds apart from each other. Do NOT pull multiple clips from the exact same scene or timestamp. Space them out across the entire video.
 
 For each clip, provide exact Start/End timestamps and write a SINGLE short AI hook.
-- hook_script (0-5 seconds, max 15 words): A high-energy opener to instantly grab attention and stop the scroll (e.g. "Mr Beast is INSANE for this!", "Nobody saw this coming", or "OMG this is so insane").
+- hook_script (0-5 seconds, max 15 words): A high-energy opener to instantly grab attention and stop the scroll. **CRITICAL: The script MUST match EXACTLY what is visually happening on screen at that moment** (e.g. if someone falls, say "He literally just fell!", or if an explosion happens, say "I can't believe that exploded!"). Do not use generic phrases unless they fit the visuals perfectly.
 - NEVER write "like and follow for part 2" or any closing remarks. The hook must instantly and naturally hand off to the original video's authentic audio which will play immediately after the hook.
 
 You must return STRICTLY a raw JSON array with EXACTLY 5 objects. NO markdown, NO ```json fences, NO commentary — just the raw array:
@@ -101,11 +101,71 @@ def _normalise_clip(raw: dict, idx: int) -> dict:
     return _clamp_clip(raw)
 
 
+# ─── Robust JSON parser ───────────────────────────────────────────────────────
+
+def _robust_json_parse(raw: str) -> list:
+    """
+    Try multiple strategies to extract a valid JSON array from Gemini output.
+    Handles: markdown fences, trailing commas, JS comments, single quotes,
+    embedded prose, and truncated responses.
+    """
+    def _attempt(text: str):
+        return json.loads(text)
+
+    def _clean(text: str) -> str:
+        # 1. Strip markdown code fences
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text.strip())
+        # 2. Remove JS-style single-line comments  // ...
+        text = re.sub(r"//[^\n]*", "", text)
+        # 3. Remove JS-style block comments /* ... */
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        # 4. Remove trailing commas before ] or }
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+        # 5. Replace Python/JS True/False/None
+        text = re.sub(r"\bTrue\b", "true", text)
+        text = re.sub(r"\bFalse\b", "false", text)
+        text = re.sub(r"\bNone\b", "null", text)
+        return text.strip()
+
+    # Strategy 1: clean then parse
+    try:
+        return _attempt(_clean(raw))
+    except Exception:
+        pass
+
+    # Strategy 2: extract first [...] block from the text
+    try:
+        m = re.search(r"(\[.*\])", raw, re.DOTALL)
+        if m:
+            return _attempt(_clean(m.group(1)))
+    except Exception:
+        pass
+
+    # Strategy 3: extract first {...} block and wrap in list
+    try:
+        m = re.search(r"(\{.*\})", raw, re.DOTALL)
+        if m:
+            result = _attempt(_clean(m.group(1)))
+            return result if isinstance(result, list) else [result]
+    except Exception:
+        pass
+
+    # Strategy 4: use json5 if available (handles single quotes etc.)
+    try:
+        import json5  # type: ignore
+        return json5.loads(_clean(raw))
+    except Exception:
+        pass
+
+    raise ValueError(f"All JSON parse strategies failed. Raw (first 600 chars):\n{raw[:600]}")
+
+
 # ─── Gemini analysis ──────────────────────────────────────────────────────────
 
-def analyze_with_gemini(video_path: Path) -> Optional[List[dict]]:
+def analyze_with_gemini(video_path: Path, youtube_url: Optional[str] = None) -> Optional[List[dict]]:
     """
-    Upload video to Gemini Files API and analyze with the master prompt.
+    Upload video to Gemini Files API (or use YouTube URL directly) and analyze with the master prompt.
     Returns a list of up to 5 clip dicts, or None on failure.
     """
     try:
@@ -124,50 +184,65 @@ def analyze_with_gemini(video_path: Path) -> Optional[List[dict]]:
 
     client = genai.Client(api_key=api_key)
 
-    proxy_path = video_path.parent / "gemini_proxy.mp4"
-    if not proxy_path.exists():
-        log("  Creating a lightweight proxy video for faster Gemini processing...")
-        import subprocess
-        subprocess.run([
-            "ffmpeg", "-y", "-i", str(video_path),
-            "-vf", "scale=-2:360", "-r", "15", "-b:v", "300k", "-b:a", "64k",
-            str(proxy_path)
-        ], capture_output=True)
-        if proxy_path.exists():
-            log("  ✅ Proxy created successfully.")
-    
-    upload_target = proxy_path if proxy_path.exists() else video_path
+    if not youtube_url and video_path:
+        proxy_path = video_path.parent / "gemini_proxy.mp4"
+        if not proxy_path.exists():
+            log("  Creating a lightweight proxy video for faster Gemini processing...")
+            import subprocess
+            subprocess.run([
+                "ffmpeg", "-y", "-i", str(video_path),
+                "-vf", "scale=-2:360", "-r", "15", "-b:v", "300k", "-b:a", "64k",
+                str(proxy_path)
+            ], capture_output=True)
+            if proxy_path.exists():
+                log("  ✅ Proxy created successfully.")
+        
+        upload_target = proxy_path if proxy_path.exists() else video_path
+    else:
+        upload_target = video_path
 
     MAX_RETRIES = 5
     BASE_WAIT   = 60
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            log(f"  Uploading video to Gemini Files API (attempt {attempt}/{MAX_RETRIES})...")
-            video_file = client.files.upload(
-                file=str(upload_target),
-                config={"display_name": upload_target.name}
-            )
+            if youtube_url:
+                log(f"  Using YouTube URL directly for Gemini: {youtube_url}")
+                video_file = None
+            else:
+                log(f"  Uploading video to Gemini Files API (attempt {attempt}/{MAX_RETRIES})...")
+                video_file = client.files.upload(
+                    file=str(upload_target),
+                    config={"display_name": upload_target.name}
+                )
+    
+                max_wait_time = 60  # 1 minute max wait
+                wait_elapsed = 0
+                while video_file.state == "PROCESSING":
+                    if wait_elapsed >= max_wait_time:
+                        raise RuntimeError("Gemini processing timed out after 1 minute.")
+                    log("  ... video is processing, waiting 10s ...")
+                    time.sleep(10)
+                    wait_elapsed += 10
+                    video_file = client.files.get(name=video_file.name)
+    
+                if video_file.state == "FAILED":
+                    raise RuntimeError("Gemini processing failed.")
+    
+                log("  Video ready. Asking Gemini to find top 5 viral moments...")
 
-            max_wait_time = 60  # 1 minute max wait
-            wait_elapsed = 0
-            while video_file.state == "PROCESSING":
-                if wait_elapsed >= max_wait_time:
-                    raise RuntimeError("Gemini processing timed out after 1 minute.")
-                log("  ... video is processing, waiting 10s ...")
-                time.sleep(10)
-                wait_elapsed += 10
-                video_file = client.files.get(name=video_file.name)
+            # Prepend URL to prompt if using youtube url
+            prompt = GEMINI_MASTER_PROMPT
+            if youtube_url:
+                prompt = f"Here is the YouTube video link: {youtube_url}\n\n" + prompt
 
-            if video_file.state == "FAILED":
-                raise RuntimeError("Gemini processing failed.")
-
-            log("  Video ready. Asking Gemini to find top 5 viral moments...")
-
+            contents = [video_file, prompt] if video_file else [prompt]
+            
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=[video_file, GEMINI_MASTER_PROMPT],
+                contents=contents,
                 config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
                     temperature=0.35,
                     max_output_tokens=4096,
                 )
@@ -175,12 +250,9 @@ def analyze_with_gemini(video_path: Path) -> Optional[List[dict]]:
 
             raw_text = response.text.strip()
             log(f"  Gemini response received ({len(raw_text)} chars).")
+            log(f"  [DEBUG] Raw Gemini output: {raw_text[:500]}")
 
-            # Strip any accidental markdown
-            raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
-            raw_text = re.sub(r"\s*```$", "", raw_text.strip())
-
-            clips_raw = json.loads(raw_text)
+            clips_raw = _robust_json_parse(raw_text)
 
             if not isinstance(clips_raw, list):
                 clips_raw = [clips_raw]  # handle if Gemini returned a single object
@@ -190,6 +262,7 @@ def analyze_with_gemini(video_path: Path) -> Optional[List[dict]]:
             log(f"  Gemini found {len(clips)} clip(s):")
             for c in clips:
                 log(f"    #{c['clip_number']}: {c.get('start_time')} -> {c.get('end_time')} ({c['duration_seconds']:.0f}s) — {c.get('viral_title', 'N/A')}")
+                log(f"    Script: {c.get('hook_script', 'None')}")
 
             return clips
 
@@ -210,18 +283,18 @@ def analyze_with_gemini(video_path: Path) -> Optional[List[dict]]:
 
 # ─── Public entry point ───────────────────────────────────────────────────────
 
-def get_all_clips(video_path: Path) -> List[dict]:
+def get_all_clips(video_path: Path, youtube_url: Optional[str] = None) -> List[dict]:
     """Main entry — returns top 5 clips via Gemini."""
-    clips = analyze_with_gemini(video_path)
+    clips = analyze_with_gemini(video_path, youtube_url)
     if not clips:
         raise RuntimeError("Gemini analysis failed. PySceneDetect fallback has been disabled by user request.")
     return clips
 
 
 # Keep a single-clip alias for backwards compatibility
-def get_best_clip(video_path: Path) -> dict:
+def get_best_clip(video_path: Path, youtube_url: Optional[str] = None) -> dict:
     """Returns only the #1 highest-retention clip."""
-    return get_all_clips(video_path)[0]
+    return get_all_clips(video_path, youtube_url)[0]
 
 
 if __name__ == "__main__":

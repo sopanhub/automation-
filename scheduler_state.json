@@ -1,0 +1,30 @@
+{
+  "minecraft": {
+    "urls": [
+      "https://youtu.be/MyUmnPxzVSs?si=outscn9dOZiORGod",
+      "https://youtu.be/dBtKnQ2y2wA?si=T2Qfh_rQMWzZQJLw",
+      "https://youtu.be/6crhCJoJ0SQ?si=SPmU3tAkdPHYot8i",
+      "https://youtu.be/zYNuE4V1WTc?si=DigHlyY0TiRLOFOx"
+    ],
+    "used_urls": [],
+    "is_running": false,
+    "next_run": null,
+    "last_run": null,
+    "interval_hours": 5
+  },
+  "mrbeast": {
+    "urls": [
+      "https://youtu.be/TDv56whosPQ?si=JCKme3ymJKb-OFUu",
+      "https://youtu.be/pe_ejTiIcSs?si=rK1PVn5oOQF5G5Mq",
+      "https://youtu.be/oBXSvS2QKxU?si=G2PkeAswo2Rxx0Pw",
+      "https://youtu.be/DZIASl9q90s?si=Xz85FjBX4fHPtbF_"
+    ],
+    "used_urls": [],
+    "clip_queue": [],
+    "is_running": true,
+    "next_run": "2026-07-01T15:45:54.495Z",
+    "last_run": null,
+    "interval_hours": 5
+  },
+  "scheduler_pid": null
+}

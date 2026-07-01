@@ -2,6 +2,15 @@
 
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
+import HistoryModal from '../components/HistoryModal';
+import AutomationPanel from '../components/AutomationPanel';
+
+const COPYRIGHT_DISCLAIMER = `----------------------------------------------------------------
+⚠️ COPYRIGHT DISCLAIMER:
+This video features materials protected by the Fair Use guidelines of Section 107 of the Copyright Act. All rights and credits go directly to the respective owners. No copyright infringement intended. 
+
+For any inquiries or clip removals, please reach out via email!
+----------------------------------------------------------------`;
 
 export default function MrBeastDashboard() {
   const [url, setUrl] = useState('');
@@ -10,6 +19,14 @@ export default function MrBeastDashboard() {
   const [logs, setLogs] = useState([]);
   const [videoGenerated, setVideoGenerated] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  
+  const [uploadTitles, setUploadTitles] = useState({});
+  const [uploadDescriptions, setUploadDescriptions] = useState({
+    1: COPYRIGHT_DISCLAIMER, 2: COPYRIGHT_DISCLAIMER, 3: COPYRIGHT_DISCLAIMER,
+    4: COPYRIGHT_DISCLAIMER, 5: COPYRIGHT_DISCLAIMER,
+  });
+  const [uploadingClip, setUploadingClip] = useState(null);
   
   const [quality, setQuality] = useState('high');
   const [videoSize, setVideoSize] = useState(null);
@@ -44,6 +61,48 @@ export default function MrBeastDashboard() {
       videoRef.current.load();
     }
   }, [videoGenerated, videoKey]);
+
+  const handleUpload = async (clipFile, clipNum) => {
+    const title = uploadTitles[clipNum] || '';
+    const desc = uploadDescriptions[clipNum] || '';
+    
+    if (!title.trim() || !desc.trim()) {
+      alert('Add a title and description before uploading.');
+      return;
+    }
+    
+    setUploadingClip(clipNum);
+    addLog(`Initiating YouTube upload for Clip #${clipNum}...`);
+    setStatus('Uploading to YouTube...');
+
+    try {
+      const response = await fetch('/api/upload-video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          title: title.trim(), 
+          description: desc.trim(), 
+          channel: 'mrbeast',
+          videoFilename: clipFile
+        }),
+      });
+      const data = await response.json();
+
+      if (response.ok) {
+        addLog(`✅ Upload successful for Clip #${clipNum}!\n` + data.stdout);
+        setStatus('✅ Uploaded to YouTube!');
+      } else {
+        addLog(`❌ Upload error for Clip #${clipNum}: ` + data.error);
+        if (data.details) addLog('Details: ' + data.details);
+        setStatus('❌ Upload Failed.');
+      }
+    } catch (err) {
+      addLog(`❌ Network Error for Clip #${clipNum}: ` + err.message);
+      setStatus('❌ Upload Failed.');
+    } finally {
+      setUploadingClip(null);
+    }
+  };
 
   const handleRunAutomation = async () => {
     if (!url.trim()) {
@@ -138,11 +197,21 @@ export default function MrBeastDashboard() {
 
   return (
     <div style={s.page}>
-      <nav style={s.nav}>
+      <nav style={{ ...s.nav, justifyContent: 'space-between' }}>
         <Link href="/" style={s.backBtn}>
           <span>← Back to Menu</span>
         </Link>
+        <button
+          onClick={() => setShowHistory(true)}
+          style={{ padding: '0.45rem 1rem', backgroundColor: '#1e293b', color: '#ef4444', border: '1px solid #ef444455', borderRadius: '8px', fontWeight: '700', cursor: 'pointer', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+        >
+          🗂️ History
+        </button>
       </nav>
+      {showHistory && <HistoryModal channel="mrbeast" onClose={() => setShowHistory(false)} />}
+
+      {/* ── Auto Scheduler ── */}
+      <AutomationPanel channel="mrbeast" />
 
       <div style={s.header}>
         <h1 style={s.title}>MrBeast / Streamer Shorts Generator</h1>
@@ -262,10 +331,47 @@ export default function MrBeastDashboard() {
                   <a
                     href={`/output/${clip.file}`}
                     download={clip.file}
-                    style={{ display: 'block', textAlign: 'center', marginTop: '0.5rem', color: '#34d399', fontWeight: 'bold', textDecoration: 'none' }}
+                    style={{ display: 'block', textAlign: 'center', margin: '1rem 0', color: '#34d399', fontWeight: 'bold', textDecoration: 'none' }}
                   >
                     ⬇️ Download Clip #{clip.num}
                   </a>
+
+                  <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: '#0f172a', borderRadius: '8px', border: '1px solid #334155' }}>
+                    <label style={{...s.label, fontSize: '0.9rem'}}>Upload Title</label>
+                    <input
+                      type="text"
+                      value={uploadTitles[clip.num] || ''}
+                      onChange={(e) => setUploadTitles({...uploadTitles, [clip.num]: e.target.value})}
+                      placeholder="Viral Title Here..."
+                      style={{ ...s.input, marginBottom: '0.75rem', padding: '0.5rem' }}
+                      disabled={uploadingClip === clip.num}
+                    />
+                    <label style={{...s.label, fontSize: '0.9rem'}}>Upload Description</label>
+                    <textarea
+                      value={uploadDescriptions[clip.num] || ''}
+                      onChange={(e) => setUploadDescriptions({...uploadDescriptions, [clip.num]: e.target.value})}
+                      placeholder="#mrbeast #shorts"
+                      style={{ ...s.input, marginBottom: '0.75rem', padding: '0.5rem', minHeight: '60px', fontFamily: 'inherit' }}
+                      disabled={uploadingClip === clip.num}
+                    />
+                    <button
+                      onClick={() => handleUpload(clip.file, clip.num)}
+                      disabled={uploadingClip === clip.num}
+                      style={{ 
+                        width: '100%', 
+                        padding: '0.75rem', 
+                        backgroundColor: '#ef4444', 
+                        color: 'white', 
+                        border: 'none', 
+                        borderRadius: '6px', 
+                        fontWeight: 'bold', 
+                        cursor: uploadingClip === clip.num ? 'not-allowed' : 'pointer',
+                        opacity: uploadingClip === clip.num ? 0.7 : 1
+                      }}
+                    >
+                      {uploadingClip === clip.num ? '⏳ Uploading…' : '📤 Upload to MrBeast Channel'}
+                    </button>
+                  </div>
                 </div>
               );
             })}

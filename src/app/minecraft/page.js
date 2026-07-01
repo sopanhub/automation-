@@ -2,6 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
+import HistoryModal from '../components/HistoryModal';
+import AutomationPanel from '../components/AutomationPanel';
 
 export default function Dashboard() {
   const [url, setUrl] = useState('');
@@ -9,6 +11,7 @@ export default function Dashboard() {
   const [logs, setLogs] = useState([]);
   const [videoGenerated, setVideoGenerated] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [uploadTitle, setUploadTitle] = useState('');
   const [uploadDescription, setUploadDescription] = useState(`Looking for the best ultra-realistic shaders for Minecraft Pocket Edition (MCPE) and Minecraft Bedrock Edition that work smoothly on lightweight, low-end, and mid-range devices?
 In this video, we showcase a handpicked selection of top-tier shaders featuring stunning graphics, realistic lighting, beautiful skies, enhanced water reflections, volumetric fog, dynamic shadows, and an immersive next-generation visual experience—all without requiring a high-end phone or an RTX graphics card!
@@ -163,7 +166,7 @@ BSL, Newb, SEUS, SLS, Complementary realistic minecraft shaders, mcpe shaders, r
       const response = await fetch('/api/upload-video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: uploadTitle.trim(), description: uploadDescription.trim() }),
+        body: JSON.stringify({ title: uploadTitle.trim(), description: uploadDescription.trim(), channel: 'minecraft' }),
       });
       const data = await response.json();
 
@@ -196,9 +199,19 @@ BSL, Newb, SEUS, SLS, Complementary realistic minecraft shaders, mcpe shaders, r
   return (
     <div style={s.page}>
       {/* ── Nav ── */}
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
         <Link href="/" style={{ color: '#60a5fa', textDecoration: 'none', fontWeight: 'bold' }}>← Back to Menu</Link>
+        <button
+          onClick={() => setShowHistory(true)}
+          style={{ padding: '0.45rem 1rem', backgroundColor: '#1e293b', color: '#22d3ee', border: '1px solid #22d3ee55', borderRadius: '8px', fontWeight: '700', cursor: 'pointer', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+        >
+          🗂️ History
+        </button>
       </div>
+      {showHistory && <HistoryModal channel="minecraft" onClose={() => setShowHistory(false)} />}
+
+      {/* ── Auto Scheduler ── */}
+      <AutomationPanel channel="minecraft" />
 
       {/* ── Header ── */}
       <div style={s.header}>
